@@ -1,18 +1,19 @@
 "use client"
 
 import type React from "react"
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { MessageCircle, Users, Send, Search, MoreVertical, Phone, Video, User } from "lucide-react"
 import ProfileView from "./profile-view"
 import { fetchChats, fetchMessages, sendMessage } from "@/services/chats"
 import { Chat } from "@/interfaces/ChatInterface"
 import { Message, SendMessageResponse } from "@/interfaces/MessageInterface"
 import { useStore } from "@/hooks/store"
+import { useEcho } from "@/hooks/useEcho"
 
 interface ChatDashboardProps {
   onLogout: () => void
@@ -24,12 +25,54 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [currentView, setCurrentView] = useState<"chat" | "profile">("chat")
   const [chats, setChats] = useState<Chat[]>([])
+  const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
-  // ✅ CORRECTO: Usar el hook useStore para obtener el estado
   const { user } = useStore()
-  const userId = user?.id || null
+  const userId = user?.id
+  const echo = useEcho()
 
+  // Función para manejar nuevos mensajes
+  const handleNewMessage = useCallback((e: any) => {
+    console.log("💬 Nuevo mensaje recibido:", e.message)
+
+    if (selectedChat && e.message.conversation_id === selectedChat.id) {
+      setMessages(prev => {
+        if (prev.some(msg => msg.id === e.message.id)) return prev
+        return [...prev, e.message]
+      })
+    }
+
+    setChats(prevChats =>
+      prevChats.map(chat =>
+        chat.id === e.message.conversation_id
+          ? { ...chat, latest_message: e.message }
+          : chat
+      )
+    )
+  }, [selectedChat])
+
+  // Función para manejar notificaciones privadas
+  const handlePrivateNotification = useCallback((e: any) => {
+    console.log("🔔 Notificación privada recibida:", e)
+
+    setChats(prevChats =>
+      prevChats.map(chat =>
+        chat.id === e.conversation_id
+          ? { ...chat, unread_count: e.unread_count }
+          : chat
+      )
+    )
+
+    if (selectedChat && e.conversation_id === selectedChat.id) {
+      setMessages(prev => {
+        if (prev.some(msg => msg.id === e.message.id)) return prev
+        return [...prev, e.message]
+      })
+    }
+  }, [selectedChat])
+
+  // Cargar datos iniciales
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -49,30 +92,128 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     fetchData()
   }, [])
 
-  // Scroll automático al final cuando cambian los mensajes
+  // Configurar WebSockets cuando echo esté listo
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
+    if (!echo || !userId) {
+      console.log("⏳ Esperando inicialización de Echo...")
+      return
     }
+
+    console.log("🔌 Configurando WebSockets...")
+
+    try {
+      // Suscribirse al canal privado del usuario
+      const privateChannel = echo.private(`user.${userId}`)
+      
+      privateChannel
+        .listen('.message.new', handlePrivateNotification)
+        .error((error: any) => {
+          console.error('Error en canal privado:', error)
+        })
+
+      // Configurar eventos de conexión
+      echo.connector.pusher.connection.bind('connected', () => {
+        console.log("✅ Conectado a WebSockets")
+        setIsConnected(true)
+      })
+
+      echo.connector.pusher.connection.bind('disconnected', () => {
+        console.log("❌ Desconectado de WebSockets")
+        setIsConnected(false)
+      })
+
+      echo.connector.pusher.connection.bind('error', (error: any) => {
+        console.error("❌ Error de conexión WebSockets:", error)
+        setIsConnected(false)
+      })
+
+      // Cleanup
+      return () => {
+        console.log("🧹 Limpiando canal privado...")
+        privateChannel.stopListening('.message.new')
+        echo.leave(`user.${userId}`)
+      }
+
+    } catch (error) {
+      console.error('❌ Error al configurar WebSockets:', error)
+    }
+  }, [echo, userId, handlePrivateNotification])
+
+  // Suscribirse al canal de conversación
+  useEffect(() => {
+    if (!echo || !selectedChat || !userId) {
+    console.log('⏳ Esperando echo, selectedChat o userId')
+    return
+  }
+    console.log(`📡 Suscribiéndose a conversación: ${selectedChat.id}`)
+
+console.log(`📡 Configurando listener para conversación: ${selectedChat.id}`)
+
+  try {
+    const channelName = `conversation.${selectedChat.id}`
+    const conversationChannel = echo.private(channelName)
+
+    console.log(`🎧 Escuchando evento 'message.sent' en canal: ${channelName}`)
+
+    // ✅ Escuchar el evento CORRECTAMENTE
+    conversationChannel.listen('.message.sent', (event: any) => {
+      console.log('💌 EVENTO RECIBIDO EN FRONTEND:', event)
+      console.log('📦 Datos del mensaje:', event.message)
+      
+      handleNewMessage(event)
+    })
+
+    // ✅ También escuchar el evento sin el punto (por si acaso)
+    conversationChannel.listen('message.sent', (event: any) => {
+      console.log('💌 EVENTO RECIBIDO (sin punto):', event)
+      handleNewMessage(event)
+    })
+
+    // ✅ Agregar listener genérico para todos los eventos del canal
+    conversationChannel.listen('.', (event: any, data: any) => {
+      console.log('📢 EVENTO GENÉRICO RECIBIDO:', event, data)
+    })
+
+    conversationChannel.error((error: any) => {
+      console.error('❌ Error en canal de conversación:', error)
+    })
+
+    // ✅ Verificar estado de la suscripción
+    conversationChannel.subscribed(() => {
+      console.log('✅ Suscrito correctamente al canal:', channelName)
+    })
+
+    return () => {
+      console.log(`🧹 Limpiando canal: ${channelName}`)
+      conversationChannel.stopListening('.message.sent')
+      conversationChannel.stopListening('message.sent')
+      echo.leave(channelName)
+    }
+
+  } catch (error) {
+    console.error('❌ Error al configurar el canal:', error)
+  }
+}, [echo, selectedChat, userId, handleNewMessage])
+
+  // Scroll automático
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (newMessage.trim() && selectedChat) {
+    if (!newMessage.trim() || !selectedChat) return
+
+    try {
       const content: SendMessageResponse = {
         content: newMessage,
         type: "text",
         file_path: null,
       }
-      try {
-        await sendMessage(selectedChat.id, content)
-        setNewMessage("")
-        // Recargar mensajes después de enviar
-        const updatedMessages = await fetchMessages(selectedChat.id)
-        setMessages(updatedMessages)
-      } catch (error) {
-        console.error("Error sending message:", error)
-      }
+      await sendMessage(selectedChat.id, content)
+      setNewMessage("")
+    } catch (error) {
+      console.error("Error sending message:", error)
     }
   }
 
@@ -86,13 +227,8 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     }
   }
 
-  const showProfile = () => {
-    setCurrentView("profile")
-  }
-
-  const backToChat = () => {
-    setCurrentView("chat")
-  }
+  const showProfile = () => setCurrentView("profile")
+  const backToChat = () => setCurrentView("chat")
 
   if (currentView === "profile") {
     return <ProfileView onBack={backToChat} onLogout={onLogout} />
@@ -101,7 +237,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   return (
     <div className="flex h-screen bg-background">
       {/* Sidebar */}
-      <div className="w-80 border-r border-border bg-card flex flex-col">
+      <div className="w-80 border-r border-border bg-card flex flex-col h-screen">
         {/* Header */}
         <div className="p-4 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between mb-4">
@@ -117,7 +253,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
         </div>
 
         {/* Chat List */}
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0 max-h-full">
           <div className="p-2">
             {chats.map((chat) => (
               <div
@@ -169,7 +305,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       </div>
 
       {/* Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col h-screen min-h-0">
         {selectedChat ? (
           <>
             {/* Chat Header */}
@@ -218,7 +354,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
             </div>
 
             {/* Messages */}
-            <ScrollArea className="flex-1">
+            <ScrollArea className="flex-1 min-h-0 max-h-full">
               <div className="p-4 space-y-4">
                 {messages.map((message) => (
                   <div
@@ -227,15 +363,15 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
                   >
                     <div
                       className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${message.user_id === userId ?
-                          "bg-primary text-primary-foreground" :
-                          "bg-muted text-muted-foreground"
+                        "bg-primary text-primary-foreground" :
+                        "bg-muted text-muted-foreground"
                         }`}
                     >
                       <p className="text-sm">{message.content}</p>
                       <p
                         className={`text-xs mt-1 ${message.user_id === userId ?
-                            "text-primary-foreground/70" :
-                            "text-muted-foreground"
+                          "text-primary-foreground/70" :
+                          "text-muted-foreground"
                           }`}
                       >
                         {new Date(message.created_at).toLocaleTimeString()}
