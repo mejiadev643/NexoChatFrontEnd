@@ -142,58 +142,58 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   // Suscribirse al canal de conversación
   useEffect(() => {
     if (!echo || !selectedChat || !userId) {
-    console.log('⏳ Esperando echo, selectedChat o userId')
-    return
-  }
+      console.log('⏳ Esperando echo, selectedChat o userId')
+      return
+    }
     console.log(`📡 Suscribiéndose a conversación: ${selectedChat.id}`)
 
-console.log(`📡 Configurando listener para conversación: ${selectedChat.id}`)
+    console.log(`📡 Configurando listener para conversación: ${selectedChat.id}`)
 
-  try {
-    const channelName = `conversation.${selectedChat.id}`
-    const conversationChannel = echo.private(channelName)
+    try {
+      const channelName = `conversation.${selectedChat.id}`
+      const conversationChannel = echo.private(channelName)
 
-    console.log(`🎧 Escuchando evento 'message.sent' en canal: ${channelName}`)
+      console.log(`🎧 Escuchando evento 'message.sent' en canal: ${channelName}`)
 
-    // ✅ Escuchar el evento CORRECTAMENTE
-    conversationChannel.listen('.message.sent', (event: any) => {
-      console.log('💌 EVENTO RECIBIDO EN FRONTEND:', event)
-      console.log('📦 Datos del mensaje:', event.message)
-      
-      handleNewMessage(event)
-    })
+      // ✅ Escuchar el evento CORRECTAMENTE
+      conversationChannel.listen('.message.sent', (event: any) => {
+        console.log('💌 EVENTO RECIBIDO EN FRONTEND:', event)
+        console.log('📦 Datos del mensaje:', event.message)
 
-    // ✅ También escuchar el evento sin el punto (por si acaso)
-    conversationChannel.listen('message.sent', (event: any) => {
-      console.log('💌 EVENTO RECIBIDO (sin punto):', event)
-      handleNewMessage(event)
-    })
+        handleNewMessage(event)
+      })
 
-    // ✅ Agregar listener genérico para todos los eventos del canal
-    conversationChannel.listen('.', (event: any, data: any) => {
-      console.log('📢 EVENTO GENÉRICO RECIBIDO:', event, data)
-    })
+      // ✅ También escuchar el evento sin el punto (por si acaso)
+      conversationChannel.listen('message.sent', (event: any) => {
+        console.log('💌 EVENTO RECIBIDO (sin punto):', event)
+        handleNewMessage(event)
+      })
 
-    conversationChannel.error((error: any) => {
-      console.error('❌ Error en canal de conversación:', error)
-    })
+      // ✅ Agregar listener genérico para todos los eventos del canal
+      conversationChannel.listen('.', (event: any, data: any) => {
+        console.log('📢 EVENTO GENÉRICO RECIBIDO:', event, data)
+      })
 
-    // ✅ Verificar estado de la suscripción
-    conversationChannel.subscribed(() => {
-      console.log('✅ Suscrito correctamente al canal:', channelName)
-    })
+      conversationChannel.error((error: any) => {
+        console.error('❌ Error en canal de conversación:', error)
+      })
 
-    return () => {
-      console.log(`🧹 Limpiando canal: ${channelName}`)
-      conversationChannel.stopListening('.message.sent')
-      conversationChannel.stopListening('message.sent')
-      echo.leave(channelName)
+      // ✅ Verificar estado de la suscripción
+      conversationChannel.subscribed(() => {
+        console.log('✅ Suscrito correctamente al canal:', channelName)
+      })
+
+      return () => {
+        console.log(`🧹 Limpiando canal: ${channelName}`)
+        conversationChannel.stopListening('.message.sent')
+        conversationChannel.stopListening('message.sent')
+        echo.leave(channelName)
+      }
+
+    } catch (error) {
+      console.error('❌ Error al configurar el canal:', error)
     }
-
-  } catch (error) {
-    console.error('❌ Error al configurar el canal:', error)
-  }
-}, [echo, selectedChat, userId, handleNewMessage])
+  }, [echo, selectedChat, userId, handleNewMessage])
 
   // Scroll automático
   useEffect(() => {
@@ -367,6 +367,7 @@ console.log(`📡 Configurando listener para conversación: ${selectedChat.id}`)
                         "bg-muted text-muted-foreground"
                         }`}
                     >
+                      <p className="font-semibold mb-1 text-[12px] italic ">{message.user.name}</p>
                       <p className="text-sm">{message.content}</p>
                       <p
                         className={`text-xs mt-1 ${message.user_id === userId ?

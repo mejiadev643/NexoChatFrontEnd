@@ -1,10 +1,10 @@
-import axios from "axios"
 import { useStore } from "@/hooks/store"
+import api from "./network"
 export async function login(email: string, password: string) {
     try {
         //no mandar cookies, solo el body
-        const response = await axios.post(
-            `${process.env.NEXT_PUBLIC_API_URL}/api/login`,
+        const response = await api.post(
+            `/api/login`,
             { email, password }
         )
         return response
@@ -18,7 +18,7 @@ export async function login(email: string, password: string) {
 
 export async function ping() {
     try {
-        const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/api/ping`,{
+        const response = await api.get(`/api/ping`,{
             headers: {
                 Authorization: `Bearer ${useStore.getState().token}`,
             },  
@@ -32,9 +32,9 @@ export async function ping() {
 
 export async function getUser() {
     try {
-        const response = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/api/profile`,{
+        const response = await api.get(`/api/profile`,{
             headers: {
-                Authorization: `Bearer ${getInitialToken()}`,
+                Authorization: `Bearer ${   useStore.getState().token}`,
             },  
         })
         return response
