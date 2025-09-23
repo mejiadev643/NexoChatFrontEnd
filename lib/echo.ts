@@ -50,11 +50,11 @@ export const initializeEcho = (token: string): Echo | null => {
       client: pusher,
     });
 
-    console.log('	Echo inicializado correctamente');
+    console.log('✅ Echo inicializado correctamente');
     return echoInstance;
 
   } catch (error) {
-    console.error('	Error al inicializar Echo:', error);
+    console.error('❌ Error al inicializar Echo:', error);
     return null;
   }
 };
