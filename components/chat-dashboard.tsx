@@ -14,6 +14,7 @@ import { Chat } from "@/interfaces/ChatInterface"
 import { Message, SendMessageResponse } from "@/interfaces/MessageInterface"
 import { useStore } from "@/hooks/store"
 import { useEcho } from "@/hooks/useEcho"
+import { set } from "date-fns"
 
 interface ChatDashboardProps {
   onLogout: () => void
@@ -32,45 +33,80 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   const userId = user?.id
   const echo = useEcho()
 
+  const truncateText = useCallback((text: string, maxLength: number) => {
+    if (text.length <= maxLength) return text
+    return text.substring(0, maxLength) + '...'
+  }, [])
+
   // Función para manejar nuevos mensajes
   const handleNewMessage = useCallback((e: any) => {
-    console.log("💬 Nuevo mensaje recibido:", e.message)
+    console.log("💬 Nueva conversacion recibida:", e.message)
+    let conversationId = parseInt(e.message.conversation_id)
 
-    if (selectedChat && e.message.conversation_id === selectedChat.id) {
+    if (selectedChat && conversationId === selectedChat.id) {
       setMessages(prev => {
-        if (prev.some(msg => msg.id === e.message.id)) return prev
+        const messageExists = prev.some(msg => msg.id === e.message.id)
+        if (messageExists) {
+          console.log("⚠️ Mensaje duplicado, ignorando:", e.message.id)
+          return prev
+        }
+        console.log("✅ Agregando nuevo mensaje:", e.message.id)
         return [...prev, e.message]
       })
     }
 
+    // Actualizar el último mensaje en la lista de chats
     setChats(prevChats =>
       prevChats.map(chat =>
-        chat.id === e.message.conversation_id
-          ? { ...chat, latest_message: e.message }
+        chat.id === conversationId
+          ? {
+            ...chat, unread_count: 0, latest_message:{
+              ...e.message,
+              content: truncateText(e.message.content, 30) // Truncar a 30 caracteres
+            }
+          }
           : chat
       )
     )
-  }, [selectedChat])
+  }, [selectedChat]) // ✅ selectedChat como dependencia
 
   // Función para manejar notificaciones privadas
   const handlePrivateNotification = useCallback((e: any) => {
     console.log("🔔 Notificación privada recibida:", e)
-
+    let conversationId = parseInt(e.conversation_id)
     setChats(prevChats =>
       prevChats.map(chat =>
-        chat.id === e.conversation_id
-          ? { ...chat, unread_count: e.unread_count }
+        chat.id === conversationId
+          ? { 
+            ...chat, unread_count: e.unread_count, latest_message: {
+              ...e.message,
+              content: truncateText(e.message.content, 30) // Truncar a 30 caracteres
+            }
+          }
           : chat
       )
     )
 
-    if (selectedChat && e.conversation_id === selectedChat.id) {
+    if (selectedChat && conversationId === selectedChat.id) {
+      //actualizar a leido en el area de mensajes
+      setChats(prevChats =>
+        prevChats.map(chat =>
+          chat.id === conversationId
+            ? { ...chat, unread_count: 0 }
+            : chat
+        )
+      )
       setMessages(prev => {
-        if (prev.some(msg => msg.id === e.message.id)) return prev
+        const messageExists = prev.some(msg => msg.id === e.message.id)
+        if (messageExists) {
+          console.log("⚠️ Mensaje duplicado en notificación, ignorando:", e.message.id)
+          return prev
+        }
+        console.log("✅ Agregando mensaje desde notificación:", e.message.id)
         return [...prev, e.message]
       })
     }
-  }, [selectedChat])
+  }, [selectedChat]) // ✅ selectedChat como dependencia
 
   // Cargar datos iniciales
   useEffect(() => {
@@ -99,45 +135,103 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       return
     }
 
-    console.log("🔌 Configurando WebSockets...")
+    console.log("🔌 Configurando WebSockets para", chats.length, "chats...")
 
     try {
-      // Suscribirse al canal privado del usuario
-      const privateChannel = echo.private(`user.${userId}`)
-      
-      privateChannel
-        .listen('.message.new', handlePrivateNotification)
-        .error((error: any) => {
-          console.error('Error en canal privado:', error)
-        })
+      // Configurar eventos de conexión globales
+      const connection = echo.connector.pusher.connection
 
-      // Configurar eventos de conexión
-      echo.connector.pusher.connection.bind('connected', () => {
+      const onConnected = () => {
         console.log("✅ Conectado a WebSockets")
         setIsConnected(true)
-      })
+      }
 
-      echo.connector.pusher.connection.bind('disconnected', () => {
+      const onDisconnected = () => {
         console.log("❌ Desconectado de WebSockets")
         setIsConnected(false)
-      })
+      }
 
-      echo.connector.pusher.connection.bind('error', (error: any) => {
+      const onError = (error: any) => {
         console.error("❌ Error de conexión WebSockets:", error)
         setIsConnected(false)
+      }
+
+      connection.bind('connected', onConnected)
+      connection.bind('disconnected', onDisconnected)
+      connection.bind('error', onError)
+
+      // Suscribirse a cada canal de conversación
+      const channels: { name: string; type: string }[] = []
+
+      chats.forEach((chat) => {
+        //si el chat es un grupo no suscribirse
+        if (chat.is_group) {
+          console.log(`⏭️ Saltando suscripción a canal de grupo: conversation.${chat.id}`)
+          return; // Saltar suscripción a canales de grupos
+        }
+
+        const channelName = `conversation.${chat.id}`
+
+        try {
+          const channel = echo.private(channelName)
+
+          const handler = (event: any) => {
+            console.log(`💌 Mensaje recibido en chat ${chat.id}:`, event)
+            handleNewMessage(event)
+          }
+
+          channel.listen('.message.sent', handler)
+
+          channel.subscribed(() => {
+            console.log(`✅ Suscrito a conversación: ${channelName}`)
+          })
+
+          channels.push({ name: channelName, type: 'conversation' })
+        } catch (error) {
+          console.error(`❌ Error suscribiendo a ${channelName}:`, error)
+        }
       })
+
+      // Suscribirse al canal de usuario para notificaciones globales
+      const userChannelName = `user.${userId}`
+
+      try {
+        const userChannel = echo.private(userChannelName)
+
+        userChannel.listen('.message.new', handlePrivateNotification)
+
+        userChannel.subscribed(() => {
+          console.log(`✅ Suscrito a canal de usuario: ${userChannelName}`)
+        })
+
+        channels.push({ name: userChannelName, type: 'user' })
+      } catch (error) {
+        console.error(`❌ Error suscribiendo a ${userChannelName}:`, error)
+      }
 
       // Cleanup
       return () => {
-        console.log("🧹 Limpiando canal privado...")
-        privateChannel.stopListening('.message.new')
-        echo.leave(`user.${userId}`)
+        console.log("🧹 Limpiando", channels.length, "canales...")
+
+        channels.forEach(({ name, type }) => {
+          try {
+            echo.leave(name)
+            console.log(`✅ Canal ${type} ${name} limpiado`)
+          } catch (error) {
+            console.error(`❌ Error limpiando canal ${name}:`, error)
+          }
+        })
+
+        // Limpiar listeners de conexión
+        connection.unbind('connected', onConnected)
+        connection.unbind('disconnected', onDisconnected)
+        connection.unbind('error', onError)
       }
 
     } catch (error) {
       console.error('❌ Error al configurar WebSockets:', error)
     }
-  }, [echo, userId, handlePrivateNotification])
+  }, [echo, userId, chats, handleNewMessage, handlePrivateNotification])
 
   // Suscribirse al canal de conversación
   useEffect(() => {
@@ -158,21 +252,11 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       // ✅ Escuchar el evento CORRECTAMENTE
       conversationChannel.listen('.message.sent', (event: any) => {
         console.log('💌 EVENTO RECIBIDO EN FRONTEND:', event)
-        console.log('📦 Datos del mensaje:', event.message)
+        console.log('📦 Datos del mensaje message.sent', event.message)
 
         handleNewMessage(event)
       })
 
-      // ✅ También escuchar el evento sin el punto (por si acaso)
-      conversationChannel.listen('message.sent', (event: any) => {
-        console.log('💌 EVENTO RECIBIDO (sin punto):', event)
-        handleNewMessage(event)
-      })
-
-      // ✅ Agregar listener genérico para todos los eventos del canal
-      conversationChannel.listen('.', (event: any, data: any) => {
-        console.log('📢 EVENTO GENÉRICO RECIBIDO:', event, data)
-      })
 
       conversationChannel.error((error: any) => {
         console.error('❌ Error en canal de conversación:', error)
@@ -186,7 +270,6 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       return () => {
         console.log(`🧹 Limpiando canal: ${channelName}`)
         conversationChannel.stopListening('.message.sent')
-        conversationChannel.stopListening('message.sent')
         echo.leave(channelName)
       }
 
@@ -199,6 +282,17 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
+
+  // useEffect para ocultar chats cuando se presione esc
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedChat(null)
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [])
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -219,6 +313,16 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
 
   const handleChatSelect = async (chat: Chat) => {
     setSelectedChat(chat)
+    //actualizar el unread a 0 en la lista de chats
+    setChats(prevChats =>
+      prevChats.map(c =>
+        c.id === chat.id
+          ? { ...c, unread_count: 0 }
+          : c
+      )
+    )
+    
+    // Cargar mensajes del chat seleccionado
     try {
       const messagesData = await fetchMessages(chat.id)
       setMessages(messagesData)

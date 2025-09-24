@@ -3,7 +3,7 @@ import "./globals.css";
 import HydrationWrapper from "@/components/hydration-wrapper";
 
 export const metadata: Metadata = {
-  title: "Chat App",
+  title: "Nexo Chat",
   description: "A real-time chat application",
 };
 
