@@ -9,12 +9,12 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { MessageCircle, Users, Send, Search, MoreVertical, Phone, Video, User } from "lucide-react"
 import ProfileView from "./profile-view"
-import { fetchChats, fetchMessages, sendMessage } from "@/services/chats"
+import { createChat, fetchChats, fetchMessages, searchUsers, sendMessage } from "@/services/chats"
 import { Chat } from "@/interfaces/ChatInterface"
 import { Message, SendMessageResponse } from "@/interfaces/MessageInterface"
 import { useStore } from "@/hooks/store"
 import { useEcho } from "@/hooks/useEcho"
-import { set } from "date-fns"
+import { userToChat } from "@/objects/FormatChat"
 
 interface ChatDashboardProps {
   onLogout: () => void
@@ -60,7 +60,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       prevChats.map(chat =>
         chat.id === conversationId
           ? {
-            ...chat, unread_count: 0, latest_message:{
+            ...chat, unread_count: 0, latest_message: {
               ...e.message,
               content: truncateText(e.message.content, 30) // Truncar a 30 caracteres
             }
@@ -77,7 +77,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     setChats(prevChats =>
       prevChats.map(chat =>
         chat.id === conversationId
-          ? { 
+          ? {
             ...chat, unread_count: e.unread_count, latest_message: {
               ...e.message,
               content: truncateText(e.message.content, 30) // Truncar a 30 caracteres
@@ -109,8 +109,8 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
   }, [selectedChat]) // ✅ selectedChat como dependencia
 
   // Cargar datos iniciales
-  useEffect(() => {
-    const fetchData = async () => {
+  const handleFetchChats= useCallback(()=>{
+   const fetchData = async () => {
       try {
         const chatsData: Chat[] = await fetchChats()
         setChats(chatsData)
@@ -126,8 +126,13 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     }
 
     fetchData()
+  },[])
+
+  useEffect(() => {
+    handleFetchChats()
   }, [])
 
+  // #region WebSokets
   // Configurar WebSockets cuando echo esté listo
   useEffect(() => {
     if (!echo || !userId) {
@@ -165,7 +170,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
 
       chats.forEach((chat) => {
         //si el chat es un grupo no suscribirse
-        if (chat.is_group) {
+        if (chat.is_group || chat.id === undefined || chat.id === null) {
           console.log(`⏭️ Saltando suscripción a canal de grupo: conversation.${chat.id}`)
           return; // Saltar suscripción a canales de grupos
         }
@@ -239,6 +244,10 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
       console.log('⏳ Esperando echo, selectedChat o userId')
       return
     }
+    if (selectedChat.latest_message === undefined || selectedChat.latest_message === null) {
+      console.log('⏳ El chat seleccionado no tiene ID definido, no se suscribe a WebSocket')
+      return
+    }
     console.log(`📡 Suscribiéndose a conversación: ${selectedChat.id}`)
 
     console.log(`📡 Configurando listener para conversación: ${selectedChat.id}`)
@@ -278,6 +287,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     }
   }, [echo, selectedChat, userId, handleNewMessage])
 
+// #endregion
   // Scroll automático
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -293,6 +303,19 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [])
+
+  // useEffect para mostrar que hay mensajes nuevos en la pestaña del navegador
+  useEffect(() => {
+    let unread_count = 0
+    chats.forEach(chat => {
+      if (chat.unread_count > 0) {
+        unread_count += chat.unread_count
+      }
+    })
+    document.title = `Nexo Chat${unread_count > 0 ? `(${unread_count})` : ''} - Message${unread_count !== 1 ? 's' : ''}`
+
+    return () => { document.title = "Nexo Chat" }
+  }, [selectedChat])
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -321,13 +344,65 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
           : c
       )
     )
+    console.log(selectedChat)
+    //si el chat tiene -1 en su id retornarx
+    if (chat.participants.length < 2 || chat.latest_message == null || chat.latest_message == undefined) {
+     setSelectedChat(null) // Limpiar mensajes para nuevo chat
+      console.log("🆕 Creando nuevo chat con usuario:", chat)
+      //fetchData y selectChat
+      await createChat([chat.id, userId])
+      // setChats(prevChats=>{
+      //   prevChats.map(c=>{
+      //     c.id === chat.id
+      //     ?{ ...c, participants: newChat.participants}
+      //     : c
+      //   })
+      // })
+      await handleFetchChats()
     
+      //return
+    }
     // Cargar mensajes del chat seleccionado
     try {
       const messagesData = await fetchMessages(chat.id)
       setMessages(messagesData)
     } catch (error) {
       console.error("Error fetching messages:", error)
+    }
+  }
+  const handleSearchNewChat = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const query = e.target.value.toLowerCase()
+    if(query.length==0){
+      await handleFetchChats()
+      return
+    }
+    if (query.length < 3) return
+    //setMessages([])
+    try {
+      const data = await searchUsers(query)
+
+      const filteredChats: Chat[] = chats.filter(chat =>
+        chat.name?.toLowerCase().includes(query)
+      )//filtra el chat por nombre unicamente
+
+      data.forEach((user: any) => {
+        const alreadyInChats = filteredChats.some(chat =>
+          //!chat.is_group &&
+          chat.participants?.some(p => p.id === user.id) ||
+          chat.name == user.name
+        )//filtra si el resultado no es un grupo y si existe un nombre que ya esta registrado en el chat filtrado
+        console.log(alreadyInChats)
+        if (!alreadyInChats) {//si no esta en el chat
+          console.log("se agrego el usuario: ", user)
+          const fakeChat = userToChat(user, userId)
+          filteredChats.push(fakeChat)
+        }
+      })
+
+
+      setChats(filteredChats)
+    } catch (err) {
+      console.error("Error searching users:", err)
     }
   }
 
@@ -352,7 +427,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
           </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Search chats..." className="pl-10" />
+            <Input placeholder="Search chats..." className="pl-10" onChange={handleSearchNewChat} />
           </div>
         </div>
 
@@ -361,7 +436,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
           <div className="p-2">
             {chats.map((chat) => (
               <div
-                key={chat.id}
+                key={chat.is_group ? `group-${chat.id}` : `user-${chat.id}`}
                 className={`flex items-center p-3 rounded-lg cursor-pointer hover:bg-muted/50 ${selectedChat?.id === chat.id ? "bg-muted" : ""
                   }`}
                 onClick={() => handleChatSelect(chat)}
@@ -384,7 +459,7 @@ export default function ChatDashboard({ onLogout }: ChatDashboardProps) {
                     <h3 className="font-medium truncate">
                       {chat.name ||
                         chat.participants
-                          .filter(p => p.id !== userId)
+                          ?.filter(p => p.id !== userId)
                           .map(p => p.name)[0]}
                     </h3>
                     <span className="text-xs text-muted-foreground">
